@@ -42,10 +42,10 @@ async def check(request: Request):
         return {"allow": False, "reason": "Temporarily disabled by admin.", "ttl_seconds": 30, "debug": debug}
 
     if machine_id in blocked:
-        return {"allow": False, "reason": "Machine blocked.", "ttl_seconds": 3600, "debug": debug}
+        return {"allow": False, "reason": "Machine blocked. Please contact maya team.", "ttl_seconds": 3600, "debug": debug}
 
     if allowed_tokens and token not in allowed_tokens:
-        return {"allow": False, "reason": "Invalid token.", "ttl_seconds": 3600, "debug": debug}
+        return {"allow": False, "reason": "Invalid token. Please get a new token on https://mayahep.netlify.app/ or contact maya team.", "ttl_seconds": 3600, "debug": debug}
 
     if app_version and version and version != app_version:
         return {"allow": False, "reason": "Update required.", "ttl_seconds": 3600, "debug": debug}
