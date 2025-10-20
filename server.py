@@ -1,58 +1,53 @@
 # server.py
-# Start Command (Render): uvicorn server:app --host 0.0.0.0 --port $PORT
+# Start Command: uvicorn server:app --host 0.0.0.0 --port $PORT
 import os, time
-from typing import Optional
-from fastapi import FastAPI
-from pydantic import BaseModel
+from fastapi import FastAPI, Request
 
-app = FastAPI(title="MAYA Verification")
-
-def read_csv_env(name: str):
-    raw = os.getenv(name, "") or ""
-    return [x.strip() for x in raw.split(",") if x.strip()]
-
-# Read env (very permissive; no typing trickery)
-ALLOWED_TOKENS   = read_csv_env("ALLOWED_TOKENS")        # e.g. "WORKSHOP_2025,VIP_1"
-BLOCKED_MACHINES = read_csv_env("BLOCKED_MACHINES")      # machine_id hashes
-APP_VERSION      = (os.getenv("APP_VERSION") or "").strip()
-KILL_SWITCH      = (os.getenv("KILL_SWITCH") or "0").strip()
-
-class CheckRequest(BaseModel):
-    token: str
-    machine_id: str
-    version: Optional[str] = None
-
-class CheckResponse(BaseModel):
-    allow: bool
-    reason: str
-    ttl_seconds: int = 60
+app = FastAPI(title="MAYA Verification — minimal")
 
 @app.get("/health")
 def health():
     return {"ok": True, "ts": int(time.time())}
 
-@app.post("/check", response_model=CheckResponse)
-def check(req: CheckRequest):
+@app.post("/check")
+async def check(request: Request):
+    # Read raw JSON without pydantic (to avoid any validation/type issues)
     try:
-        # Global kill switch
-        if KILL_SWITCH == "1":
-            return CheckResponse(allow=False, reason="Temporarily disabled by admin.", ttl_seconds=30)
-
-        # Block specific machines
-        if req.machine_id in BLOCKED_MACHINES:
-            return CheckResponse(allow=False, reason="Machine blocked.", ttl_seconds=3600)
-
-        # Token gate (if list provided)
-        if ALLOWED_TOKENS and req.token not in ALLOWED_TOKENS:
-            return CheckResponse(allow=False, reason="Invalid token.", ttl_seconds=3600)
-
-        # Optional version gate
-        if APP_VERSION and req.version and req.version != APP_VERSION:
-            return CheckResponse(allow=False, reason="Update required.", ttl_seconds=3600)
-
-        return CheckResponse(allow=True, reason="OK", ttl_seconds=60)
-
+        data = await request.json()
     except Exception as e:
-        # Return the reason so we see what's breaking (only for debugging)
-        return CheckResponse(allow=False, reason=f"SERVER_EXCEPTION: {type(e).__name__}: {e}", ttl_seconds=10)
+        return {"allow": False, "reason": f"BAD_JSON: {e}", "ttl_seconds": 10}
 
+    # Read env safely
+    allowed_tokens = (os.getenv("ALLOWED_TOKENS") or "").split(",")
+    allowed_tokens = [t.strip() for t in allowed_tokens if t.strip()]
+    app_version = (os.getenv("APP_VERSION") or "").strip()
+    kill_switch = (os.getenv("KILL_SWITCH") or "0").strip()
+    blocked = (os.getenv("BLOCKED_MACHINES") or "").split(",")
+    blocked = [m.strip() for m in blocked if m.strip()]
+
+    token = str(data.get("token", ""))
+    machine_id = str(data.get("machine_id", ""))
+    version = str(data.get("version", ""))
+
+    # Debug echo (temporal para diagnóstico)
+    # Elimina "debug" cuando todo funcione.
+    debug = {"received": data, "env": {
+        "ALLOWED_TOKENS": allowed_tokens,
+        "APP_VERSION": app_version,
+        "KILL_SWITCH": kill_switch,
+        "BLOCKED_MACHINES": blocked
+    }}
+
+    if kill_switch == "1":
+        return {"allow": False, "reason": "Temporarily disabled by admin.", "ttl_seconds": 30, "debug": debug}
+
+    if machine_id in blocked:
+        return {"allow": False, "reason": "Machine blocked.", "ttl_seconds": 3600, "debug": debug}
+
+    if allowed_tokens and token not in allowed_tokens:
+        return {"allow": False, "reason": "Invalid token.", "ttl_seconds": 3600, "debug": debug}
+
+    if app_version and version and version != app_version:
+        return {"allow": False, "reason": "Update required.", "ttl_seconds": 3600, "debug": debug}
+
+    return {"allow": True, "reason": "OK", "ttl_seconds": 60, "debug": debug}
