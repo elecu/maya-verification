@@ -52,6 +52,46 @@ def run_maya():
         # If there is no main(), just executing top-level code may be enough
         pass
 
+# ----------------------- OPTIONAL: token pickup helper (non-breaking) -----------------------
+# This block does NOT alter existing behaviour if MAYA_LICENSE_TOKEN is already set.
+# It only helps when you want to feed multiple tokens via:
+#   a) Secret File: TOKENS_FILE=/etc/secrets/tokens.txt   (one token per line)
+#   b) Env var:     ALLOWED_TOKENS="TOKEN1,TOKEN2\nTOKEN3"
+# We simply pick the FIRST token found and use it as LICENSE_TOKEN.
+def _maybe_override_license_token_from_allowed_list():
+    """If MAYA_LICENSE_TOKEN is not explicitly provided, read the first token
+    from TOKENS_FILE or ALLOWED_TOKENS (newline/comma/semicolon/whitespace separated)."""
+    global LICENSE_TOKEN
+    # Respect explicit per-user token if provided.
+    if os.getenv("MAYA_LICENSE_TOKEN"):
+        return
+
+    tokens_file = os.getenv("TOKENS_FILE")  # e.g., /etc/secrets/tokens.txt
+    raw = ""
+    try:
+        if tokens_file and os.path.exists(tokens_file):
+            with open(tokens_file, "r", encoding="utf-8") as f:
+                raw = f.read()
+        else:
+            raw = os.getenv("ALLOWED_TOKENS", "")
+    except Exception:
+        # Silent fallback; keep default LICENSE_TOKEN.
+        raw = ""
+
+    # Split on common separators: newline, comma, semicolon, tabs, spaces
+    try:
+        import re
+        parts = [p.strip() for p in re.split(r"[,\n;\r\t ]+", raw) if p.strip()]
+        if parts:
+            LICENSE_TOKEN = parts[0]  # first valid token
+    except Exception:
+        # If anything goes wrong, keep the original LICENSE_TOKEN as-is.
+        pass
+
+# Call the helper once at import-time (safe and idempotent).
+_maybe_override_license_token_from_allowed_list()
+# -------------------------------------------------------------------------------------------
+
 def main():
     from verifier import require_permission_or_exit
     require_permission_or_exit(SERVER_URL, LICENSE_TOKEN, APP_VERSION)
