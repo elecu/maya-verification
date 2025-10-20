@@ -3,15 +3,15 @@ import json, time, uuid, hashlib, getpass, platform, os
 from typing import Tuple
 import requests, certifi
 
-# ---------- MODOS (elige uno) ----------
-# FAST: falla en ~4-6s si no hay red/servidor
+# ---------- MODES (pick one) ----------
+# FAST: fails in ~4–6s if no network/server
 FAST = dict(CONNECT=2, READ=3, WARMUP_TRIES=1, CHECK_TRIES=1, BACKOFF=0.4, TOTAL_DEADLINE=6)
-# BALANCED: un poco más paciente (~10-12s)
+# BALANCED: a bit more patient (~10–12s)
 BALANCED = dict(CONNECT=3, READ=5, WARMUP_TRIES=2, CHECK_TRIES=2, BACKOFF=0.8, TOTAL_DEADLINE=12)
-# RENDER_FRIENDLY: tolera cold-start (~18-22s)
+# RENDER_FRIENDLY: tolerates cold starts (~18–22s)
 RENDER_FRIENDLY = dict(CONNECT=4, READ=8, WARMUP_TRIES=3, CHECK_TRIES=2, BACKOFF=1.1, TOTAL_DEADLINE=20)
 
-# Selección del modo (por defecto: FAST). Puedes cambiar a BALANCED o RENDER_FRIENDLY.
+# Mode selection (default: FAST). You can switch to BALANCED or RENDER_FRIENDLY.
 MODE = os.getenv("MAYA_VERIFY_MODE", "FAST").upper()
 CFG = {"FAST": FAST, "BALANCED": BALANCED, "RENDER_FRIENDLY": RENDER_FRIENDLY}.get(MODE, FAST)
 
@@ -35,11 +35,11 @@ def build_machine_id() -> str:
 def _session() -> requests.Session:
     s = requests.Session()
     s.verify = certifi.where()
-    # Sin reintentos automáticos: controlamos nosotros el timing
+    # No automatic retries: we control timing ourselves
     return s
 
 def _warmup(base_url: str, start: float) -> None:
-    """Ping /health pocas veces para 'despertar' el server. No bloquea si se acaba el deadline."""
+    """Ping /health a few times to 'wake' the server. Doesn't block if the deadline runs out."""
     url = base_url.rstrip("/") + "/health"
     sess = _session()
     for i in range(WARMUP_TRIES):
@@ -47,9 +47,9 @@ def _warmup(base_url: str, start: float) -> None:
             return
         try:
             sess.get(url, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT))
-            return  # con un 200 o incluso 404 ya sabemos que respondió algo
+            return  # with a 200 or even 404 we know it responded
         except Exception:
-            # breve backoff pero respetando el deadline
+            # short backoff, still respecting the deadline
             sleep_s = min(BACKOFF * (2 ** i), _deadline_remaining(start))
             if sleep_s > 0:
                 time.sleep(sleep_s)
@@ -79,10 +79,10 @@ def check_online(server_url: str, token: str, version: str) -> Tuple[bool, str, 
     start = time.monotonic()
     payload = {"token": token, "machine_id": build_machine_id(), "version": version}
 
-    # 1) Warm-up muy corto (o nulo según el modo)
+    # 1) Very short warm-up (or none, depending on mode)
     _warmup(server_url, start)
 
-    # 2) Intentos de /check hasta alcanzar deadline
+    # 2) /check attempts until we hit the deadline
     last_reason, last_ttl = "Timeout", 5
     for i in range(CHECK_TRIES):
         if _deadline_remaining(start) <= 0:
@@ -95,7 +95,7 @@ def check_online(server_url: str, token: str, version: str) -> Tuple[bool, str, 
         if sleep_s > 0:
             time.sleep(sleep_s)
 
-    # 3) Si rebasó el deadline, falla rápido con mensaje claro
+    # 3) If the deadline is exceeded, fail fast with a clear message
     if _deadline_remaining(start) <= 0:
         return False, f"Timed out after ~{TOTAL_DEADLINE}s", 5
     return False, last_reason, last_ttl
@@ -108,6 +108,6 @@ def require_permission_or_exit(server_url: str, token: str, version: str) -> Non
     if allowed:
         root.destroy()
         return
-    messagebox.showerror("MĀYĀ", f"No permission: {reason}")
+    messagebox.showerror("māyā", f"No permission: {reason}")
     root.destroy()
     raise SystemExit(1)
