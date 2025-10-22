@@ -3,4 +3,4 @@ updates:
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
-      interval: "weekly"   # o "monthly"
+      interval: "monthly"   # o "weekly"
