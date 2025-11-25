@@ -16,6 +16,7 @@ from licenses_db import (
     License,
     LicenseDevice,
     create_license,
+    scan_licenses_and_notify,  # NEW: cron helper for expiry notifications
 )
 
 app = FastAPI(title="māyā Verification — licensing + devices")
@@ -67,6 +68,10 @@ class RenewResponse(BaseModel):
 class ResetDevicesRequest(BaseModel):
     admin_key: str
     license_code: str
+
+
+class CronCheckRequest(BaseModel):  # NEW: body model for cron endpoint
+    admin_key: str
 
 
 # ----------------------------------------------------------------------
@@ -181,6 +186,33 @@ def reset_devices(payload: ResetDevicesRequest, db: Session = Depends(get_db)):
         "ok": True,
         "license_code": lic.code,
         "removed_devices": removed,
+    }
+
+
+# ----------------------------------------------------------------------
+# NEW: cron endpoint for license expiry notifications (Make webhook)
+# ----------------------------------------------------------------------
+@app.post("/cron/check_licenses")
+def cron_check_licenses(payload: CronCheckRequest, db: Session = Depends(get_db)):
+    """
+    Cron entry point (called once per day from Render or another scheduler).
+
+    It validates the admin key and then delegates to scan_licenses_and_notify(),
+    which will:
+      - mark already-expired licenses as inactive and send 'expired' events
+      - send 'expires_soon' events 7 days before expiration
+
+    The actual emails / MailerLite updates are handled in Make using those events.
+    """
+    require_admin_key(payload.admin_key)
+
+    now = datetime.now(timezone.utc)
+    counts = scan_licenses_and_notify(db, now)
+
+    return {
+        "ok": True,
+        "counts": counts,
+        "ts": now.isoformat().replace("+00:00", "Z"),
     }
 
 
