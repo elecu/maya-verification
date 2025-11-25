@@ -2,6 +2,11 @@ import os
 import secrets
 import string
 from datetime import datetime, timedelta, timezone
+from typing import Dict  # NEW: for type hint of scan_licenses_and_notify return
+
+import json               # NEW: for JSON encoding in webhook helper
+import urllib.request     # NEW: for sending HTTP POST without extra dependencies
+import urllib.error       # NEW: to catch HTTP errors
 
 from sqlalchemy import (
     Boolean,
@@ -107,3 +112,120 @@ def create_license(db: Session, email: str) -> License:
     db.commit()
     db.refresh(lic)
     return lic
+
+
+# ----------------------------------------------------------------------
+# NEW: helpers for license-expiry webhooks (used by cron endpoint)
+# ----------------------------------------------------------------------
+
+# Make / webhook URL for license events (expires_soon / expired)
+LICENSE_WEBHOOK_URL = os.getenv("LICENSE_WEBHOOK_URL")
+
+
+def _post_json(url: str, payload: Dict) -> None:
+    """
+    Small helper to POST JSON without adding new dependencies.
+    This is intentionally 'best effort': errors are just printed.
+    """
+    if not url:
+        return
+
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            # We do not need the body; just ensure the request succeeds.
+            _ = resp.read()
+    except urllib.error.URLError as exc:
+        print(f"[license-webhook] Failed to POST to {url}: {exc}")
+
+
+def notify_license_to_webhook(lic: License, event: str) -> None:
+    """
+    Send a license-event notification to Make via LICENSE_WEBHOOK_URL.
+
+    The payload shape is:
+      {
+        "event": "expires_soon" | "expired",
+        "email": "...",
+        "code": "...",
+        "expires_at": "ISO-8601 string"
+      }
+    """
+    if not LICENSE_WEBHOOK_URL:
+        # If the env var is not configured, just skip silently.
+        return
+
+    payload = {
+        "event": event,
+        "email": lic.email,
+        "code": lic.code,
+        "expires_at": lic.expires_at.isoformat() if lic.expires_at else None,
+    }
+    _post_json(LICENSE_WEBHOOK_URL, payload)
+
+
+def scan_licenses_and_notify(db: Session, now: datetime) -> Dict[str, int]:
+    """
+    Scan the database for licenses that are:
+      - active AND already expired  -> mark inactive + send 'expired'
+      - active AND exactly 7 days before expiration -> send 'expires_soon'
+
+    This is called from the cron endpoint in server.py.
+
+    Returns a dict with counters, e.g.:
+      { "expires_soon": 3, "expired": 7 }
+    """
+    # Normalise 'now' to UTC (aware) and derive today's UTC date
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    else:
+        now = now.astimezone(timezone.utc)
+
+    today_utc = now.date()
+    seven_days_later = today_utc + timedelta(days=7)
+    cutoff = datetime.combine(
+        seven_days_later, datetime.min.time(), tzinfo=timezone.utc
+    ) + timedelta(days=1)
+
+    # We only care about licenses that are still marked as active
+    # and that expire within the next 7 days (including already expired).
+    candidates = (
+        db.query(License)
+        .filter(
+            License.active.is_(True),
+            License.expires_at <= cutoff,
+        )
+        .all()
+    )
+
+    expires_soon_count = 0
+    expired_count = 0
+
+    for lic in candidates:
+        exp = lic.expires_at.astimezone(timezone.utc)
+
+        if exp <= now:
+            # Already expired: mark inactive and notify 'expired'
+            lic.active = False
+            notify_license_to_webhook(lic, event="expired")
+            expired_count += 1
+        else:
+            # Not yet expired but within <= 7 days.
+            # Only send the reminder exactly 7 days before the expiry date.
+            if exp.date() == seven_days_later:
+                notify_license_to_webhook(lic, event="expires_soon")
+                expires_soon_count += 1
+
+    if expires_soon_count or expired_count:
+        db.commit()
+
+    return {
+        "expires_soon": expires_soon_count,
+        "expired": expired_count,
+    }
